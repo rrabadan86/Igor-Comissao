@@ -35,22 +35,20 @@ def forcar_clique(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def ler_meta_planilha_h59():
-    print("\n--- 📊 INICIANDO LEITURA DA PLANILHA (ALVO: CÉLULA B1) ---")
+    print("\n--- 📊 INICIANDO LEITURA DA PLANILHA (ALVO: LINHA 48) ---")
     try:
-        sheet_id = URL_PLANILHA.split('/d/')[1].split('/')[0]
-        url_csv = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+        url_csv = f"{URL_PLANILHA}/gviz/tq?tqx=out:csv&sheet=LOJA"
+        df = pd.read_csv(url_csv, header=None, dtype=str, skip_blank_lines=False, on_bad_lines='skip', engine='python')
         
-        df = pd.read_csv(url_csv, header=None, dtype=str, skip_blank_lines=False)
-        
-        linha_alvo = 0 
-        coluna_alvo = 1 
+        linha_alvo = 0
+        coluna_alvo = 1
         
         if len(df) > linha_alvo:
             valor_bruto = str(df.iloc[linha_alvo, coluna_alvo])
             if valor_bruto and valor_bruto.lower() != 'nan':
                 valor_limpo = valor_bruto.replace('R$', '').replace(' ', '').replace('.', '')
                 valor_limpo = re.sub(r'[^\d,]', '', valor_limpo)
-                print(f"✅ VALOR CAPTURADO (B1): {valor_limpo}")
+                print(f"✅ VALOR CAPTURADO: {valor_limpo}")
                 return valor_limpo
         return None
     except Exception as e:
@@ -156,19 +154,34 @@ def ajustar_meta_loja(driver, valor):
 def extrair_tabela(driver, tabela_element):
     celulas = tabela_element.find_elements(By.CSS_SELECTOR, ".pivotTableCellWrap, .ui-grid-cell-contents")
     lista = [c.text.strip() for c in celulas if c.text.strip() != ""]
+    
+    valor_faturado_total = "Não encontrado" # Valor padrão
+    
     html = """<table style="border-collapse: collapse; width: 600px; font-family: Arial; border: 1px solid #ddd;">
     <tr style="background-color: #0f4c3a; color: white;"><th style="padding: 10px;">Vendedor</th><th style="padding: 10px;">Comissão</th><th style="padding: 10px;">Prêmiação</th></tr>"""
+    
     blacklist = ["Meta", "Bonus", "TKM", "PMA", "Tot.", "SEM VENDEDOR", "Vendedor", "Comissão", "Premiação", "Prêmiação", "IPA", "Gorjeta"]
+    
     i = 0
     while i < len(lista):
         item = lista[i]
+        
         if item == "Total":
-            vals = [x for x in lista[i+1:i+6] if "R$" in x or (any(c.isdigit() for c in x) and "," in x)]
+            # Captura valores monetários após a palavra 'Total'
+            vals = [x for x in lista[i+1:i+10] if "R$" in x or (any(c.isdigit() for c in x) and "," in x)]
+            
+            # De acordo com sua imagem, o 'Tot. Vendido' é a 5ª ou 6ª coluna.
+            # Vamos tentar capturar o valor faturado total aqui:
+            if len(vals) >= 5:
+                valor_faturado_total = vals[4] # Geralmente o 5º valor monetário na linha total (Tot. Vendido)
+
             val1, val2 = (vals[0] if len(vals)>=1 else "-", vals[1] if len(vals)>=2 else "-")
             html += f"<tr style='background-color: #e6f2ef; font-weight: bold;'><td style='padding:8px;'>Total</td><td style='padding:8px;'>{val1}</td><td style='padding:8px;'>{val2}</td></tr>"
             break
+            
         if item.startswith("R$") or (len(item)>0 and item[0].isdigit()) or any(b in item for b in blacklist):
             i+=1; continue
+            
         vals = []
         for x in lista[i+1:i+12]:
             if "R$" in x or (any(c.isdigit() for c in x) and "," in x and len(x)<20): vals.append(x)
@@ -176,7 +189,8 @@ def extrair_tabela(driver, tabela_element):
         val1, val2 = (vals[0] if len(vals)>=1 else "-", vals[1] if len(vals)>=2 else "-")
         html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding:8px;'>{item}</td><td style='padding:8px;'>{val1}</td><td style='padding:8px;'>{val2}</td></tr>"
         i+=1
-    return html + "</table>"
+        
+    return html + "</table>", valor_faturado_total # Retorna ambos
 
 def extrair_tabela_gorjeta(driver, tabela_element):
     if not tabela_element: return ""
@@ -186,12 +200,14 @@ def extrair_tabela_gorjeta(driver, tabela_element):
     html = """<table style="border-collapse: collapse; width: 400px; font-family: Arial; border: 1px solid #ddd;">
     <tr style="background-color: #0f4c3a; color: white;"><th style="padding: 10px;">Vendedor</th><th style="padding: 10px;">Gorjeta</th></tr>"""
     
+    # BLACKLIST REFORÇADA PARA IGNORAR LIXO DA TABELA GRANDE
     blacklist = ["SEM VENDEDOR", "Vendedor", "Gorjeta", "R$ Total", "TKM", "PMA", "IPA", "Meta", "Bonus", "Premiação", "Comissão", "Tot.", "Arom.", "Puro", "Acess."]
     
     i = 0
     while i < len(lista):
         item = lista[i]
         
+        # Filtra lixo antes de processar
         if any(bad in item for bad in blacklist) or (item.startswith("R$") or (len(item)>0 and item[0].isdigit())):
             i += 1
             continue
@@ -203,6 +219,8 @@ def extrair_tabela_gorjeta(driver, tabela_element):
             
         vendedor = item
         gorjeta = "-"
+        
+        # Pega o próximo item que pareça dinheiro
         if i+1 < len(lista):
             prox = lista[i+1]
             if "R$" in prox or (any(c.isdigit() for c in prox) and "," in prox):
@@ -213,48 +231,44 @@ def extrair_tabela_gorjeta(driver, tabela_element):
         
     return html + "</table>"
 
-def enviar_email(anexo, mes, ano, html_comissao, html_gorjeta, meta_valor):
-    print("--- Preparando envio de e-mail ---")
-    if not EMAIL_REMETENTE or not SENHA_APP:
-        print("FALHA: Credenciais de e-mail não encontradas nas variáveis de ambiente.")
-        return
-        
-    try:
-        msg = MIMEMultipart('related')
-        msg['Subject'] = f"[TS Torres] Comissões e Gorjetas - {mes}/{ano}"
-        msg['From'] = EMAIL_REMETENTE
-        msg['To'] = EMAIL_DESTINATARIO
-        texto_meta = f"R$ {meta_valor}" if meta_valor else "Não capturada"
-        
-        html = f"""<html><body>
-        <h2 style='color:#0f4c3a;'>Relatório de Comissionamento</h2>
-        <p>Ref: <b>{mes}/{ano}</b></p>
-        <p><b>Meta da Loja: {texto_meta}</b></p>
-        <br>
-        {html_comissao}
-        <br>
-        <h3 style='color:#0f4c3a;'>Relatório de Gorjetas</h3>
-        {html_gorjeta}
-        <br>
-        <p style="font-family: Arial; font-size: 12px; color: gray;"><i>O print original segue em anexo.</i></p>
-        </body></html>"""
-        
-        msg.attach(MIMEText(html, 'html'))
-        with open(anexo, 'rb') as f:
-            img = MIMEImage(f.read())
-            img.add_header('Content-Disposition', 'attachment', filename=anexo)
-            msg.attach(img)
-            
-        print(f"Conectando ao servidor SMTP (User: {EMAIL_REMETENTE})...")
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_REMETENTE, SENHA_APP)
-        server.send_message(msg)
-        server.quit()
-        print("✅ E-mail enviado com sucesso!")
-        
-    except Exception as e:
-        print(f"❌ ERRO AO ENVIAR E-MAIL: {e}")
+def enviar_email(anexo, mes, ano, html_comissao, html_gorjeta, meta_valor, valor_faturado):
+    if not EMAIL_REMETENTE or not SENHA_APP: return
+    msg = MIMEMultipart('related')
+    msg['Subject'] = f"[TS Flamboyant] Comissões e Gorjetas - {mes}/{ano}"
+    msg['From'] = EMAIL_REMETENTE
+    msg['To'] = EMAIL_DESTINATARIO
+    
+    texto_meta = f"R$ {meta_valor}" if meta_valor else "Não capturada"
+    # Se o valor vindo do BI já tiver R$, usamos direto, senão formatamos
+    texto_faturado = valor_faturado if "R$" in str(valor_faturado) else f"R$ {valor_faturado}"
+    
+    html = f"""<html><body>
+    <h2 style='color:#0f4c3a;'>Relatório de Comissionamento</h2>
+    <p>Ref: <b>{mes}/{ano}</b></p>
+    <p><b>Meta da Loja: {texto_meta}</b></p>
+    <p><b>Faturado: <span style='color: blue;'>{texto_faturado}</span></b></p>
+    <br>
+    {html_comissao}
+    <br>
+    <h3 style='color:#0f4c3a;'>Relatório de Gorjetas</h3>
+    {html_gorjeta}
+    <br>
+    <p style="font-family: Arial; font-size: 12px; color: gray;"><i>O print original segue em anexo.</i></p>
+    </body></html>"""
+    
+    # ... (resto do código de envio permanece igual)
+    
+    msg.attach(MIMEText(html, 'html'))
+    with open(anexo, 'rb') as f:
+        img = MIMEImage(f.read())
+        img.add_header('Content-Disposition', 'attachment', filename=anexo)
+        msg.attach(img)
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(EMAIL_REMETENTE, SENHA_APP)
+    server.send_message(msg)
+    server.quit()
+    print("E-mail enviado!")
 
 def executar_robo():
     valor_meta = ler_meta_planilha_h59()
@@ -284,16 +298,21 @@ def executar_robo():
         
         driver.switch_to.default_content()
         
-        # 2. Tabela Gorjeta
+        # 2. Tabela Gorjeta (Tenta achar a MENOR tabela que tem Gorjeta)
+        # O seletor agora é mais genérico para garantir que ache ALGO, mas a função de extração filtra o lixo.
         xp_gorjeta = "//div[contains(@class,'visualContainer')][descendant::*[contains(text(), 'Gorjeta')]]"
+        # Pode haver várias, vamos tentar pegar a última encontrada que costuma ser a menor/detalhada ou iterar
         tabelas_possiveis = driver.find_elements(By.XPATH, xp_gorjeta)
         
+        # Lógica: A tabela grande tem MUITAS colunas. A pequena tem poucas.
+        # Vamos tentar pegar a tabela que NÃO tem 'Premiação' dentro dela
         tab_gorjeta = None
         for t in tabelas_possiveis:
-            if "Premiação" not in t.get_attribute("textContent"):
+            if "Premiação" not in t.text:
                 tab_gorjeta = t
                 break
         
+        # Fallback se não filtrar
         if not tab_gorjeta and tabelas_possiveis: tab_gorjeta = tabelas_possiveis[0]
             
         html_gorjeta = extrair_tabela_gorjeta(driver, tab_gorjeta) if tab_gorjeta else "<p>Erro tab. gorjeta</p>"
@@ -308,8 +327,6 @@ if __name__ == "__main__":
     try:
         a, m, y, h_comissao, h_gorjeta, meta = executar_robo()
         enviar_email(a, m, y, h_comissao, h_gorjeta, meta)
-    except Exception as e: print(f"Erro Fatal: {e}")
-
-
+    except Exception as e: print(f"Erro: {e}")
 
 
